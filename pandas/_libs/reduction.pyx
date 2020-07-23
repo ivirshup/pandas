@@ -328,7 +328,6 @@ class InvalidApply(Exception):
 def apply_frame_axis0(object frame, object f, object names,
                       const int64_t[:] starts, const int64_t[:] ends):
     cdef:
-        BlockSlider slider
         Py_ssize_t i, n = len(starts)
         list results
         object piece
@@ -339,16 +338,13 @@ def apply_frame_axis0(object frame, object f, object names,
 
     results = []
 
-    slider = BlockSlider(frame)
-
     mutated = False
-    item_cache = slider.dummy._item_cache
+    item_cache = frame._item_cache
     try:
         for i in range(n):
-            slider.move(starts[i], ends[i])
 
             item_cache.clear()  # ugh
-            chunk = slider.frame[starts[i]:ends[i]]
+            chunk = frame[starts[i]:ends[i]]
             object.__setattr__(chunk, 'name', names[i])
 
             try:
@@ -381,81 +377,6 @@ def apply_frame_axis0(object frame, object f, object names,
             if require_slow_apply:
                 break
     finally:
-        slider.reset()
+        pass
 
     return results, mutated
-
-
-cdef class BlockSlider:
-    """
-    Only capable of sliding on axis=0
-    """
-
-    cdef public:
-        object frame, dummy, index
-        int nblocks
-        Slider idx_slider
-        list blocks
-
-    cdef:
-        char **base_ptrs
-
-    def __init__(self, object frame):
-        cdef:
-            Py_ssize_t i
-            object b
-
-        self.frame = frame
-        self.dummy = frame[:0]
-        self.index = self.dummy.index
-
-        self.blocks = [b.values for b in self.dummy._mgr.blocks]
-
-        for x in self.blocks:
-            util.set_array_not_contiguous(x)
-
-        self.nblocks = len(self.blocks)
-        # See the comment in indexes/base.py about _index_data.
-        # We need this for EA-backed indexes that have a reference to a 1-d
-        # ndarray like datetime / timedelta / period.
-        self.idx_slider = Slider(
-            self.frame.index._index_data, self.dummy.index._index_data)
-
-        self.base_ptrs = <char**>malloc(sizeof(char*) * len(self.blocks))
-        for i, block in enumerate(self.blocks):
-            self.base_ptrs[i] = (<ndarray>block).data
-
-    def __dealloc__(self):
-        free(self.base_ptrs)
-
-    cdef move(self, int start, int end):
-        cdef:
-            ndarray arr
-            Py_ssize_t i
-
-        # move blocks
-        for i in range(self.nblocks):
-            arr = self.blocks[i]
-
-            # axis=1 is the frame's axis=0
-            arr.data = self.base_ptrs[i] + arr.strides[1] * start
-            arr.shape[1] = end - start
-
-        # move and set the index
-        self.idx_slider.move(start, end)
-
-        object.__setattr__(self.index, '_index_data', self.idx_slider.buf)
-        self.index._engine.clear_mapping()
-
-    cdef reset(self):
-        cdef:
-            ndarray arr
-            Py_ssize_t i
-
-        # reset blocks
-        for i in range(self.nblocks):
-            arr = self.blocks[i]
-
-            # axis=1 is the frame's axis=0
-            arr.data = self.base_ptrs[i]
-            arr.shape[1] = 0
